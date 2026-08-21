@@ -3,30 +3,32 @@ package robot;
 import javax.swing.JPanel;
 import java.awt.*;
 import java.awt.geom.AffineTransform;
+import java.awt.geom.Ellipse2D;
 import java.awt.geom.Path2D;
 import java.awt.geom.Rectangle2D;
 import java.util.List;
 
-/**
- * 空白场地的画面 / the blank field view.
- * 你不需要修改这个文件。/ You do not need to edit this file.
- */
 class FieldPanel extends JPanel {
 
     private static final Color BG        = new Color(0x11, 0x14, 0x18);
-    private static final Color GRID      = new Color(0x22, 0x28, 0x30);
-    private static final Color GRID_MAIN = new Color(0x2E, 0x38, 0x44);
-    private static final Color BORDER    = new Color(0x55, 0x62, 0x72);
-    private static final Color TRAIL     = new Color(0x3D, 0x8B, 0xFD, 0x99);
+    private static final Color TILE      = new Color(0x18, 0x1D, 0x24);
+    private static final Color TILE_EDGE = new Color(0x27, 0x2F, 0x3A);
+    private static final Color BORDER    = new Color(0x5C, 0x6A, 0x7A);
     private static final Color BODY      = new Color(0x1E, 0x2A, 0x38);
-    private static final Color BODY_EDGE = new Color(0x8A, 0xB4, 0xF8);
+    private static final Color RED_A     = new Color(0xF0, 0x5A, 0x5A);
+    private static final Color BLUE_A    = new Color(0x5A, 0x93, 0xF0);
+    private static final Color WAYPOINT  = new Color(0xC8, 0xD2, 0xE0);
 
     private final Robot robot;
 
     FieldPanel(Robot robot) {
         this.robot = robot;
         setBackground(BG);
-        setPreferredSize(new Dimension(720, 720));
+        setPreferredSize(new Dimension(740, 740));
+    }
+
+    private Color allianceColor() {
+        return Constants.alliance == Alliance.BLUE ? BLUE_A : RED_A;
     }
 
     @Override
@@ -34,53 +36,99 @@ class FieldPanel extends JPanel {
         super.paintComponent(g);
         Graphics2D g2 = (Graphics2D) g.create();
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-        g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+        g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,
+                RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
 
-        double size = Math.min(getWidth(), getHeight()) - 24;
-        double scale = size / Robot.FIELD_SIZE_CM;
+        double size = Math.min(getWidth(), getHeight()) - 28;
+        double scale = size / Constants.FIELD_SIZE;
         double ox = (getWidth() - size) / 2.0;
         double oy = (getHeight() - size) / 2.0;
 
-        drawGrid(g2, ox, oy, size, scale);
+        drawField(g2, ox, oy, size, scale);
+        MyPaths paths = MyPaths.current;
+        if (paths != null) {
+            drawPreview(g2, paths, ox, oy, size, scale);
+            drawWaypoints(g2, paths, ox, oy, size, scale);
+        }
         drawTrail(g2, ox, oy, size, scale);
         drawRobot(g2, ox, oy, size, scale);
 
         g2.dispose();
     }
 
-    /** 场地坐标 (cm) -> 屏幕坐标 (px) */
-    private double sx(double xCm, double ox, double scale) { return ox + xCm * scale; }
-    private double sy(double yCm, double oy, double size, double scale) { return oy + size - yCm * scale; }
+    private double sx(double xIn, double ox, double scale) { return ox + xIn * scale; }
+    private double sy(double yIn, double oy, double size, double scale) { return oy + size - yIn * scale; }
 
-    private void drawGrid(Graphics2D g2, double ox, double oy, double size, double scale) {
-        g2.setColor(new Color(0x16, 0x1A, 0x20));
+    private void drawField(Graphics2D g2, double ox, double oy, double size, double scale) {
+        g2.setColor(TILE);
         g2.fill(new Rectangle2D.Double(ox, oy, size, size));
 
-        for (int cm = 0; cm <= (int) Robot.FIELD_SIZE_CM; cm += 25) {
-            boolean main = cm % 100 == 0;
-            g2.setColor(main ? GRID_MAIN : GRID);
-            g2.setStroke(new BasicStroke(main ? 1.4f : 0.8f));
-            double px = sx(cm, ox, scale);
-            double py = sy(cm, oy, size, scale);
-            g2.drawLine((int) px, (int) oy, (int) px, (int) (oy + size));
-            g2.drawLine((int) ox, (int) py, (int) (ox + size), (int) py);
+        g2.setColor(TILE_EDGE);
+        g2.setStroke(new BasicStroke(1f));
+        for (double in = Constants.TILE; in < Constants.FIELD_SIZE; in += Constants.TILE) {
+            double px = sx(in, ox, scale), py = sy(in, oy, size, scale);
+            g2.draw(new java.awt.geom.Line2D.Double(px, oy, px, oy + size));
+            g2.draw(new java.awt.geom.Line2D.Double(ox, py, ox + size, py));
         }
 
         g2.setColor(BORDER);
-        g2.setStroke(new BasicStroke(2f));
+        g2.setStroke(new BasicStroke(2.5f));
         g2.draw(new Rectangle2D.Double(ox, oy, size, size));
 
+        g2.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 10));
         g2.setColor(new Color(0x5A, 0x66, 0x76));
-        g2.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 11));
-        for (int cm = 0; cm <= (int) Robot.FIELD_SIZE_CM; cm += 100) {
-            if (cm < Robot.FIELD_SIZE_CM) {          // 最后一个标签会顶到边框 / would clip
-                g2.drawString(String.valueOf(cm), (float) (sx(cm, ox, scale) + 3),
+        for (int in = 0; in <= (int) Constants.FIELD_SIZE; in += 24) {
+            if (in < Constants.FIELD_SIZE) {
+                g2.drawString(String.valueOf(in), (float) (sx(in, ox, scale) + 3),
                         (float) (oy + size - 4));
             }
-            if (cm > 0) {
-                g2.drawString(String.valueOf(cm), (float) (ox + 4),
-                        (float) (sy(cm, oy, size, scale) - 3));
+            if (in > 0) {
+                g2.drawString(String.valueOf(in), (float) (ox + 4),
+                        (float) (sy(in, oy, size, scale) - 3));
             }
+        }
+    }
+
+    private void drawPreview(Graphics2D g2, MyPaths paths, double ox, double oy,
+                             double size, double scale) {
+        Color c = allianceColor();
+        g2.setColor(new Color(c.getRed(), c.getGreen(), c.getBlue(), 70));
+        g2.setStroke(new BasicStroke(2.2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        for (Path path : paths.all()) {
+            BezierCurve curve = path.getCurve();
+            Path2D.Double p2 = new Path2D.Double();
+            for (int i = 0; i <= 60; i++) {
+                Pose pt = curve.pointAt(i / 60.0);
+                double px = sx(pt.x, ox, scale), py = sy(pt.y, oy, size, scale);
+                if (i == 0) p2.moveTo(px, py); else p2.lineTo(px, py);
+            }
+            g2.draw(p2);
+        }
+    }
+
+    private void drawWaypoints(Graphics2D g2, MyPaths paths, double ox, double oy,
+                               double size, double scale) {
+        Pose[] poses = paths.labelledPoses();
+        String[] labels = paths.labels();
+        g2.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 10));
+
+        for (int i = 0; i < poses.length; i++) {
+            Pose p = poses[i];
+            double px = sx(p.x, ox, scale), py = sy(p.y, oy, size, scale);
+            boolean goal = labels[i].equals("GOAL");
+
+            if (goal) {
+                g2.setColor(allianceColor());
+                g2.fill(new Ellipse2D.Double(px - 7, py - 7, 14, 14));
+                g2.setColor(Color.WHITE);
+                g2.setStroke(new BasicStroke(1.6f));
+                g2.draw(new Ellipse2D.Double(px - 7, py - 7, 14, 14));
+            } else {
+                g2.setColor(WAYPOINT);
+                g2.fill(new Ellipse2D.Double(px - 2.6, py - 2.6, 5.2, 5.2));
+            }
+            g2.setColor(goal ? Color.WHITE : new Color(0x9A, 0xA6, 0xB4));
+            g2.drawString(labels[i], (float) (px + 7), (float) (py + 4));
         }
     }
 
@@ -94,8 +142,9 @@ class FieldPanel extends JPanel {
             double[] p = trail.get(i);
             path.lineTo(sx(p[0], ox, scale), sy(p[1], oy, size, scale));
         }
-        g2.setColor(TRAIL);
-        g2.setStroke(new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        Color c = allianceColor();
+        g2.setColor(new Color(c.getRed(), c.getGreen(), c.getBlue(), 230));
+        g2.setStroke(new BasicStroke(2.4f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
         g2.draw(path);
     }
 
@@ -105,54 +154,57 @@ class FieldPanel extends JPanel {
 
         AffineTransform old = g2.getTransform();
         g2.translate(cx, cy);
-        g2.rotate(-robot.getHeading());   // 屏幕 y 向下，所以取负 / screen y points down
+        g2.rotate(-robot.getHeading());
 
-        double L = Robot.BODY_LENGTH_CM * scale;
-        double W = Robot.BODY_WIDTH_CM * scale;
+        double L = Constants.ROBOT_LENGTH * scale;
+        double W = Constants.ROBOT_WIDTH * scale;
+        double prot = Constants.ROBOT_FRONT_PROTRUSION * scale;
 
-        // 车身 / chassis
+        if (prot > 0) {
+            g2.setColor(new Color(0x33, 0x3E, 0x4C));
+            g2.fill(new Rectangle2D.Double(L / 2, -W * 0.30, prot, W * 0.60));
+            g2.setColor(allianceColor());
+            g2.setStroke(new BasicStroke(1.4f));
+            g2.draw(new Rectangle2D.Double(L / 2, -W * 0.30, prot, W * 0.60));
+        }
+
         g2.setColor(BODY);
         g2.fill(new Rectangle2D.Double(-L / 2, -W / 2, L, W));
-        g2.setColor(BODY_EDGE);
-        g2.setStroke(new BasicStroke(2f));
+        g2.setColor(allianceColor());
+        g2.setStroke(new BasicStroke(2.2f));
         g2.draw(new Rectangle2D.Double(-L / 2, -W / 2, L, W));
 
-        // 车头方向 / front marker
         Path2D.Double nose = new Path2D.Double();
-        nose.moveTo(L / 2 - 2, -W * 0.18);
-        nose.lineTo(L / 2 + W * 0.20, 0);
-        nose.lineTo(L / 2 - 2, W * 0.18);
+        nose.moveTo(L / 2 - W * 0.22, -W * 0.16);
+        nose.lineTo(L / 2 - 1, 0);
+        nose.lineTo(L / 2 - W * 0.22, W * 0.16);
         nose.closePath();
-        g2.setColor(BODY_EDGE);
+        g2.setColor(allianceColor());
         g2.fill(nose);
 
-        // 四个轮子，颜色跟着功率变 / four wheels, coloured by motor power
-        double wl = 13 * scale, ww = 5.5 * scale;
-        drawWheel(g2, robot.frontLeft,   15 * scale, -16 * scale, wl, ww);
-        drawWheel(g2, robot.frontRight,  15 * scale,  16 * scale, wl, ww);
-        drawWheel(g2, robot.backLeft,   -15 * scale, -16 * scale, wl, ww);
-        drawWheel(g2, robot.backRight,  -15 * scale,  16 * scale, wl, ww);
+        double wl = 4.0 * scale, ww = 2.0 * scale;
+        double lx = Constants.HALF_WHEELBASE * scale, ly = Constants.HALF_TRACK * scale;
+        drawWheel(g2, robot.frontLeft,   lx, -ly, wl, ww);
+        drawWheel(g2, robot.frontRight,  lx,  ly, wl, ww);
+        drawWheel(g2, robot.backLeft,   -lx, -ly, wl, ww);
+        drawWheel(g2, robot.backRight,  -lx,  ly, wl, ww);
 
         g2.setTransform(old);
     }
 
-    /** 注意：车体坐标 y 向左为正，屏幕里要取负 / body +y is left, screen y is down */
-    private void drawWheel(Graphics2D g2, Motor motor, double bx, double byLeft,
+    private void drawWheel(Graphics2D g2, Motor motor, double bx, double byScreen,
                            double len, double wid) {
-        double px = bx, py = byLeft;
-        Rectangle2D.Double r = new Rectangle2D.Double(px - len / 2, py - wid / 2, len, wid);
+        Rectangle2D.Double r = new Rectangle2D.Double(bx - len / 2, byScreen - wid / 2, len, wid);
         g2.setColor(powerColor(motor.getPower()));
         g2.fill(r);
         g2.setColor(new Color(0x0B, 0x0E, 0x12));
-        g2.setStroke(new BasicStroke(1.2f));
+        g2.setStroke(new BasicStroke(1.1f));
         g2.draw(r);
     }
 
     static Color powerColor(double power) {
         double p = Math.max(-1, Math.min(1, power));
-        if (p >= 0) {
-            return blend(new Color(0x3A, 0x40, 0x48), new Color(0x35, 0xD0, 0x7F), p);
-        }
+        if (p >= 0) return blend(new Color(0x3A, 0x40, 0x48), new Color(0x35, 0xD0, 0x7F), p);
         return blend(new Color(0x3A, 0x40, 0x48), new Color(0xE5, 0x5A, 0x4E), -p);
     }
 

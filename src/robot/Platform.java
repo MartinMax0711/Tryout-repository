@@ -3,12 +3,6 @@ package robot;
 import javax.swing.*;
 import java.awt.*;
 
-/**
- * 平台本体：开窗口、跑物理仿真、执行你在 MyProgram 里写的代码。
- * The platform: opens the window, runs the physics loop and executes MyProgram.
- *
- * 你不需要修改这个文件。/ You do not need to edit this file.
- */
 public class Platform {
 
     private final Robot robot;
@@ -27,7 +21,6 @@ public class Platform {
         this.simulation = new Simulation(robot);
     }
 
-    /** 开机：显示窗口，然后自动执行 MyProgram.run() / boot up and auto-run MyProgram */
     public void start() {
         simThread = new Thread(simulation, "simulation");
         simThread.setDaemon(true);
@@ -40,26 +33,35 @@ public class Platform {
     }
 
     private void buildWindow() {
-        frame = new JFrame("Robot Platform  ·  4 Motors  ·  400 x 400 cm");
+        frame = new JFrame("Robot Platform  ·  4 Motors  ·  144 x 144 in");
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
 
         fieldPanel = new FieldPanel(robot);
         telemetryPanel = new TelemetryPanel(robot, () -> status);
 
-        JButton runButton = new JButton("▶  运行 / Run");
-        JButton stopButton = new JButton("■  停止 / Stop");
+        JButton runButton = new JButton("\u25B6  Run");
+        JButton stopButton = new JButton("\u25A0  Stop");
         runButton.setFocusable(false);
         stopButton.setFocusable(false);
         runButton.addActionListener(e -> startProgram());
         stopButton.addActionListener(e -> stopProgram("STOPPED"));
 
-        JLabel hint = new JLabel("  代码写在 MyProgram.java  ·  edit MyProgram.java");
+        JComboBox<Alliance> allianceBox = new JComboBox<>(Alliance.values());
+        allianceBox.setSelectedItem(Constants.alliance);
+        allianceBox.setFocusable(false);
+        allianceBox.addActionListener(e -> {
+            Constants.alliance = (Alliance) allianceBox.getSelectedItem();
+            startProgram();
+        });
+
+        JLabel hint = new JLabel("  Paths: MyPaths.java   \u00B7   Actions: MyProgram.java");
         hint.setForeground(new Color(0x76, 0x83, 0x93));
 
         JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 6));
         bar.setBackground(new Color(0x0D, 0x10, 0x14));
         bar.add(runButton);
         bar.add(stopButton);
+        bar.add(allianceBox);
         bar.add(hint);
 
         JPanel root = new JPanel(new BorderLayout());
@@ -79,7 +81,6 @@ public class Platform {
         }).start();
     }
 
-    /** 从头开始跑一次你的程序 / reset the robot and run your program from the top */
     public void startProgram() {
         stopProgram(null);
         robot.reset();
@@ -120,10 +121,6 @@ public class Platform {
         return status;
     }
 
-    /**
-     * 没有窗口的模式（跑测试或者在服务器上用）。
-     * Headless mode — runs the program without opening a window.
-     */
     public void runHeadless() {
         simThread = new Thread(simulation, "simulation");
         simThread.setDaemon(true);
@@ -142,7 +139,7 @@ public class Platform {
             robot.stop();
             simulation.shutdown();
         }
-        System.out.printf("%n%s  ->  x=%.1f cm  y=%.1f cm  heading=%.1f°  runtime=%.2fs%n",
+        System.out.printf("%n%s  ->  x=%.2f in  y=%.2f in  heading=%.1f°  runtime=%.2fs%n",
                 status, robot.getX(), robot.getY(), robot.getHeadingDeg(), robot.getRuntime());
     }
 }

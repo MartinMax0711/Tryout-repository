@@ -6,12 +6,6 @@ import java.awt.geom.Rectangle2D;
 import java.util.List;
 import java.util.function.Supplier;
 
-/**
- * 右侧的数据面板：位置、四个电机的功率和编码器、log。
- * The side panel: pose, the four motor powers/encoders, and your log lines.
- *
- * 你不需要修改这个文件。/ You do not need to edit this file.
- */
 class TelemetryPanel extends JPanel {
 
     private static final Color BG    = new Color(0x0D, 0x10, 0x14);
@@ -50,13 +44,14 @@ class TelemetryPanel extends JPanel {
         g2.drawLine(x, y, x + w, y);
         y += 26;
 
-        y = row(g2, x, y, w, "状态 status", status.get());
-        y = row(g2, x, y, w, "运行时间 runtime", String.format("%.2f s", robot.getRuntime()));
-        y = row(g2, x, y, w, "位置 X", String.format("%.1f cm", robot.getX()));
-        y = row(g2, x, y, w, "位置 Y", String.format("%.1f cm", robot.getY()));
-        y = row(g2, x, y, w, "朝向 heading", String.format("%.1f°", robot.getHeadingDeg()));
-        y = row(g2, x, y, w, "速度 speed", String.format("%.1f cm/s", robot.getSpeedCmPerSec()));
-        y = row(g2, x, y, w, "转速 turn rate", String.format("%.1f °/s", robot.getTurnRateDegPerSec()));
+        y = row(g2, x, y, w, "Alliance", String.valueOf(Constants.alliance));
+        y = row(g2, x, y, w, "Status", status.get());
+        y = row(g2, x, y, w, "Runtime", String.format("%.2f s", robot.getRuntime()));
+        y = row(g2, x, y, w, "Position X", String.format("%.2f in", robot.getX()));
+        y = row(g2, x, y, w, "Position Y", String.format("%.2f in", robot.getY()));
+        y = row(g2, x, y, w, "Heading", String.format("%.1f°", robot.getHeadingDeg()));
+        y = row(g2, x, y, w, "Speed", String.format("%.1f in/s", robot.getSpeed()));
+        y = row(g2, x, y, w, "Turn rate", String.format("%.1f °/s", robot.getTurnRateDegPerSec()));
 
         y += 16;
         g2.setFont(new Font(Font.SANS_SERIF, Font.BOLD, 12));
@@ -102,14 +97,13 @@ class TelemetryPanel extends JPanel {
         g2.setColor(LABEL);
         g2.drawString(m.getName(), x, y + 10);
 
-        String info = String.format("%+.2f   %6.0f tick   %6.1f cm",
-                m.getPower(), m.getTicks(), m.getDistanceCm());
+        String info = String.format("%+.2f  %7.0f tick  %6.1f in",
+                m.getPower(), m.getTicks(), m.getDistance());
         g2.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 10));
         g2.setColor(VALUE);
         int tw = g2.getFontMetrics().stringWidth(info);
         g2.drawString(info, x + w - tw, y + 10);
 
-        // 功率条，中间是 0 / power bar, centred on zero
         int barY = y + 16;
         int barH = 7;
         g2.setColor(BAR_BG);

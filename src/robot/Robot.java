@@ -5,40 +5,23 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 
-/**
- * 四电机机器人（麦克纳姆轮：可以前后、左右平移、原地旋转）。
- * Four-motor mecanum robot: it can drive, strafe sideways and turn in place.
- *
- * 你不需要修改这个文件，只要在 MyProgram.java 里调用这里的方法。
- * You do not need to edit this file — just call these methods from MyProgram.java.
- *
- * 坐标系 / Coordinate system:
- *   场地 400cm x 400cm，原点在左下角，x 向右，y 向上。
- *   heading = 0 度表示机器人朝右（+x），逆时针为正。
- */
 public class Robot {
 
-    // ---- 场地和车身尺寸 / field and chassis dimensions ----
-    public static final double FIELD_SIZE_CM = 400.0;
-    public static final double BODY_LENGTH_CM = 40.0;   // 前后长
-    public static final double BODY_WIDTH_CM  = 40.0;   // 左右宽
-    private static final double HALF_WHEELBASE = 15.0;  // 前后轮距的一半 lx
-    private static final double HALF_TRACK     = 16.0;  // 左右轮距的一半 ly
-    private static final double K = HALF_WHEELBASE + HALF_TRACK;
+    public static final double FIELD_SIZE = Constants.FIELD_SIZE;
+    private static final double K = Constants.HALF_WHEELBASE + Constants.HALF_TRACK;
 
-    // ---- 四个电机，已经帮你定义好了 / the four motors, already defined for you ----
     public final Motor frontLeft  = new Motor("frontLeft");
     public final Motor frontRight = new Motor("frontRight");
     public final Motor backLeft   = new Motor("backLeft");
     public final Motor backRight  = new Motor("backRight");
     public final Motor[] motors = { frontLeft, frontRight, backLeft, backRight };
 
-    // ---- 位姿 / pose ----
     private final Object lock = new Object();
-    private double x = FIELD_SIZE_CM / 2;
-    private double y = FIELD_SIZE_CM / 2;
-    private double heading = 0.0;               // 弧度 / radians
-    private double vx, vy, omega;               // 车身速度（车体坐标系）
+    private Pose initialPose = new Pose(FIELD_SIZE / 2, FIELD_SIZE / 2, 0);
+    private double x = initialPose.x;
+    private double y = initialPose.y;
+    private double heading = initialPose.heading;
+    private double vx, vy, omega;
     private double runtime = 0.0;
 
     private final List<double[]> trail = new ArrayList<>();
@@ -50,81 +33,142 @@ public class Robot {
         }
     }
 
-    // =====================================================================
-    //  简单指令（会等到动作做完才返回）/ blocking commands
-    // =====================================================================
+    public void followPath(Path path) throws InterruptedException {
+        BezierCurve curve = path.getCurve();
+        double maxPower = path.getMaxPower();
 
-    /** 向前走 cm 厘米 / drive forward */
-    public void forward(double cm) throws InterruptedException {
-        move(cm, 0, 0, 0.6);
+        final double LOOKAHEAD = 8.0;
+        final double DECEL = 22.0;
+        final double MIN_POWER = 0.12;
+        final double HANDOFF = 3.0;
+
+        long deadline = System.currentTimeMillis()
+                + 4000 + (long) (curve.getLength() * 120);
+
+        while (true) {
+            if (Thread.interrupted()) throw new InterruptedException();
+
+            double px = getX(), py = getY(), ph = getHeading();
+            Pose end = curve.end();
+            double distEnd = Math.hypot(end.x - px, end.y - py);
+            double t = curve.closestT(px, py);
+
+            if ((t > 0.90 && distEnd < HANDOFF) || System.currentTimeMillis() > deadline) break;
+
+            Pose target = curve.pointAt(curve.advance(t, LOOKAHEAD));
+            double dx = target.x - px, dy = target.y - py;
+            double norm = Math.hypot(dx, dy);
+            if (norm < 1e-6) break;
+
+            double power = Math.max(MIN_POWER, Math.min(maxPower, distEnd / DECEL * maxPower));
+            double vfx = dx / norm * power, vfy = dy / norm * power;
+
+            double cos = Math.cos(ph), sin = Math.sin(ph);
+            double fwd  =  vfx * cos + vfy * sin;
+            double left = -vfx * sin + vfy * cos;
+
+            double targetH = path.headingAt(Math.min(1.0, t + 0.15));
+            double turn = shape(normalizeRad(targetH - ph) / Math.toRadians(45), maxPower, 0);
+
+            drive(fwd, left, turn);
+            Thread.sleep(5);
+        }
+
+        goToPose(path.endPose(), Math.min(maxPower, 0.55));
     }
 
-    /** 向后走 cm 厘米 / drive backward */
-    public void backward(double cm) throws InterruptedException {
-        move(-cm, 0, 0, 0.6);
+    public void followPaths(Path... paths) throws InterruptedException {
+        for (Path p : paths) followPath(p);
     }
 
-    /** 向左平移 cm 厘米 / strafe left */
-    public void strafeLeft(double cm) throws InterruptedException {
-        move(0, cm, 0, 0.6);
+    public void goToPose(Pose target, double maxPower) throws InterruptedException {
+        final double FINAL_POS_TOL = 0.25;
+        final double FINAL_ANG_TOL = Math.toRadians(0.3);
+
+        long deadline = System.currentTimeMillis() + 6000
+                + (long) (Math.hypot(target.x - getX(), target.y - getY()) * 120);
+
+        for (int pass = 0; pass < 3; pass++) {
+            boolean fast = (pass == 0);
+            posePass(target,
+                    fast ? maxPower : Math.min(maxPower, 0.22),
+                    fast ? 0.10 : 0.035,
+                    fast ? 0.40 : 0.12,
+                    fast ? Math.toRadians(0.5) : Math.toRadians(0.12),
+                    deadline);
+            stop();
+            Thread.sleep(120);
+
+            double dist = Math.hypot(target.x - getX(), target.y - getY());
+            double he = Math.abs(normalizeRad(target.heading - getHeading()));
+            if ((dist < FINAL_POS_TOL && he < FINAL_ANG_TOL)
+                    || System.currentTimeMillis() > deadline) break;
+        }
     }
 
-    /** 向右平移 cm 厘米 / strafe right */
-    public void strafeRight(double cm) throws InterruptedException {
-        move(0, -cm, 0, 0.6);
+    public void goToPose(Pose target) throws InterruptedException {
+        goToPose(target, 0.6);
     }
 
-    /** 原地左转（逆时针）degrees 度 / turn left (counter-clockwise) */
-    public void turnLeft(double degrees) throws InterruptedException {
-        move(0, 0, Math.toRadians(degrees), 0.5);
+    private void posePass(Pose target, double maxPower, double minPower,
+                          double posTol, double angTol, long deadline)
+            throws InterruptedException {
+        final double POS_RAMP = 10.0;
+        final double ANG_RAMP = Math.toRadians(45);
+
+        while (true) {
+            if (Thread.interrupted()) throw new InterruptedException();
+
+            double px = getX(), py = getY(), ph = getHeading();
+            double dx = target.x - px, dy = target.y - py;
+            double dist = Math.hypot(dx, dy);
+            double he = normalizeRad(target.heading - ph);
+
+            if ((dist < posTol && Math.abs(he) < angTol)
+                    || System.currentTimeMillis() > deadline) return;
+
+            double power = dist > 1e-6
+                    ? shape(dist / POS_RAMP, maxPower, minPower) : 0;
+            double vfx = dist > 1e-6 ? dx / dist * power : 0;
+            double vfy = dist > 1e-6 ? dy / dist * power : 0;
+
+            double cos = Math.cos(ph), sin = Math.sin(ph);
+            double fwd  =  vfx * cos + vfy * sin;
+            double left = -vfx * sin + vfy * cos;
+            double turn = shape(he / ANG_RAMP, maxPower, minPower);
+
+            drive(fwd, left, turn);
+            Thread.sleep(5);
+        }
     }
 
-    /** 原地右转（顺时针）degrees 度 / turn right (clockwise) */
-    public void turnRight(double degrees) throws InterruptedException {
-        move(0, 0, -Math.toRadians(degrees), 0.5);
-    }
+    public void forward(double inches) throws InterruptedException      { move(inches, 0, 0, 0.6); }
+    public void backward(double inches) throws InterruptedException     { move(-inches, 0, 0, 0.6); }
+    public void strafeLeft(double inches) throws InterruptedException    { move(0, inches, 0, 0.6); }
+    public void strafeRight(double inches) throws InterruptedException   { move(0, -inches, 0, 0.6); }
+    public void turnLeft(double degrees) throws InterruptedException     { move(0, 0, Math.toRadians(degrees), 0.5); }
+    public void turnRight(double degrees) throws InterruptedException    { move(0, 0, -Math.toRadians(degrees), 0.5); }
 
-    /** 转到某个绝对角度（度）/ turn to an absolute heading in degrees */
     public void turnTo(double headingDegrees) throws InterruptedException {
-        double diff = normalizeRad(Math.toRadians(headingDegrees) - getHeading());
-        move(0, 0, diff, 0.5);
+        move(0, 0, normalizeRad(Math.toRadians(headingDegrees) - getHeading()), 0.5);
     }
 
-    /** 先转向再开到场地上的某个点 / turn toward a field point and drive to it */
     public void goTo(double targetX, double targetY) throws InterruptedException {
-        double dx = targetX - getX();
-        double dy = targetY - getY();
-        double dist = Math.hypot(dx, dy);
-        if (dist < 0.5) return;
-        turnTo(Math.toDegrees(Math.atan2(dy, dx)));
-        forward(dist);
+        goToPose(new Pose(targetX, targetY, getHeading()), 0.6);
     }
 
-    /** 停车 / stop all four motors */
     public void stop() {
         for (Motor m : motors) m.stop();
     }
 
-    /** 等待若干毫秒 / sleep for milliseconds */
     public void sleep(long millis) throws InterruptedException {
         Thread.sleep(millis);
     }
 
-    /** 等待若干秒 / sleep for seconds */
     public void waitSeconds(double seconds) throws InterruptedException {
         Thread.sleep(Math.max(0, (long) (seconds * 1000)));
     }
 
-    // =====================================================================
-    //  连续控制（马上返回，电机保持这个速度）/ non-blocking control
-    // =====================================================================
-
-    /**
-     * 同时给三个方向的速度，立刻返回。/ set a continuous velocity command.
-     * @param forward 前进 -1..1，正数向前
-     * @param strafe  平移 -1..1，正数向左
-     * @param turn    旋转 -1..1，正数逆时针
-     */
     public void drive(double forward, double strafe, double turn) {
         double fl = forward - strafe - turn;
         double fr = forward + strafe + turn;
@@ -138,7 +182,12 @@ public class Robot {
         backRight.setPower(br / max);
     }
 
-    /** 直接分别给四个电机功率 / set the four motor powers directly */
+    public void driveFieldCentric(double fieldX, double fieldY, double turn) {
+        double h = getHeading();
+        double cos = Math.cos(h), sin = Math.sin(h);
+        drive(fieldX * cos + fieldY * sin, -fieldX * sin + fieldY * cos, turn);
+    }
+
     public void setMotorPowers(double fl, double fr, double bl, double br) {
         frontLeft.setPower(fl);
         frontRight.setPower(fr);
@@ -146,38 +195,41 @@ public class Robot {
         backRight.setPower(br);
     }
 
-    /** 四个电机编码器清零 / reset all four encoders */
     public void resetEncoders() {
         for (Motor m : motors) m.resetEncoder();
     }
 
-    // =====================================================================
-    //  读取状态 / sensors and state
-    // =====================================================================
-
     public double getX() { synchronized (lock) { return x; } }
     public double getY() { synchronized (lock) { return y; } }
-
-    /** 朝向，弧度 / heading in radians */
     public double getHeading() { synchronized (lock) { return heading; } }
-
-    /** 朝向，度（-180..180）/ heading in degrees */
     public double getHeadingDeg() { return Math.toDegrees(normalizeRad(getHeading())); }
 
-    /** 当前速度 cm/s / current ground speed */
-    public double getSpeedCmPerSec() {
+    public Pose getPose() {
+        synchronized (lock) { return new Pose(x, y, heading); }
+    }
+
+    public void setPose(Pose pose) {
+        synchronized (lock) {
+            initialPose = pose;
+            x = pose.x;
+            y = pose.y;
+            heading = pose.heading;
+            vx = vy = omega = 0;
+            trail.clear();
+            trail.add(new double[]{x, y});
+        }
+    }
+
+    public double getSpeed() {
         synchronized (lock) { return Math.hypot(vx, vy); }
     }
 
-    /** 当前旋转速度 度/秒 / current turn rate in degrees per second */
     public double getTurnRateDegPerSec() {
         synchronized (lock) { return Math.toDegrees(omega); }
     }
 
-    /** 程序运行了多少秒 / seconds since the program started */
     public double getRuntime() { synchronized (lock) { return runtime; } }
 
-    /** 在屏幕右侧和控制台打印一条信息 / print a line to the telemetry panel and console */
     public void log(String message) {
         System.out.printf("[%6.2fs] %s%n", getRuntime(), message);
         synchronized (logLines) {
@@ -194,53 +246,44 @@ public class Robot {
         synchronized (lock) { return new ArrayList<>(trail); }
     }
 
-    // =====================================================================
-    //  内部实现 / internals — 一般不需要看
-    // =====================================================================
-
-    /**
-     * 用编码器闭环走一个相对位移（车体坐标系），走完再做一次慢速修正。
-     * Closed-loop relative move using the wheel encoders, plus a slow correction pass.
-     */
-    private void move(double forwardCm, double strafeCm, double turnRad, double maxPower)
+    private void move(double forwardIn, double strafeIn, double turnRad, double maxPower)
             throws InterruptedException {
-        final double FINAL_POS_TOL = 0.15;                   // cm
-        final double FINAL_ANG_TOL = Math.toRadians(0.2);    // rad
+        final double FINAL_POS_TOL = 0.1;
+        final double FINAL_ANG_TOL = Math.toRadians(0.2);
 
         double[] start = wheelDistances();
         long deadline = System.currentTimeMillis()
-                + 5000 + (long) ((Math.abs(forwardCm) + Math.abs(strafeCm)) * 60)
+                + 5000 + (long) ((Math.abs(forwardIn) + Math.abs(strafeIn)) * 120)
                 + (long) (Math.abs(Math.toDegrees(turnRad)) * 25);
 
         for (int pass = 0; pass < 3; pass++) {
             boolean fast = (pass == 0);
-            runPass(start, forwardCm, strafeCm, turnRad,
-                    fast ? maxPower : Math.min(maxPower, 0.22),   // 修正用低速
-                    fast ? 0.10 : 0.035,                          // 最小功率
-                    fast ? 0.30 : 0.10,                           // 位置容差 cm
+            runPass(start, forwardIn, strafeIn, turnRad,
+                    fast ? maxPower : Math.min(maxPower, 0.22),
+                    fast ? 0.10 : 0.035,
+                    fast ? 0.20 : 0.06,
                     fast ? Math.toRadians(0.4) : Math.toRadians(0.12),
                     deadline);
             stop();
-            Thread.sleep(120);   // 让车身停稳 / let the chassis settle
+            Thread.sleep(120);
 
-            double[] e = remainingError(start, forwardCm, strafeCm, turnRad);
+            double[] e = remainingError(start, forwardIn, strafeIn, turnRad);
             boolean good = Math.abs(e[0]) < FINAL_POS_TOL && Math.abs(e[1]) < FINAL_POS_TOL
                     && Math.abs(e[2]) < FINAL_ANG_TOL;
             if (good || System.currentTimeMillis() > deadline) break;
         }
     }
 
-    /** 一轮闭环控制，直到到位或超时 / one closed-loop pass until on target or timed out */
-    private void runPass(double[] start, double forwardCm, double strafeCm, double turnRad,
+    private void runPass(double[] start, double forwardIn, double strafeIn, double turnRad,
                          double maxPower, double minPower, double posTol, double angTol,
                          long deadline) throws InterruptedException {
-        final double POS_RAMP = 25.0;                  // cm，进入这个范围开始减速
+        final double POS_RAMP = 10.0;
         final double ANG_RAMP = Math.toRadians(50);
 
         while (true) {
             if (Thread.interrupted()) throw new InterruptedException();
 
-            double[] e = remainingError(start, forwardCm, strafeCm, turnRad);
+            double[] e = remainingError(start, forwardIn, strafeIn, turnRad);
             boolean atTarget = Math.abs(e[0]) < posTol && Math.abs(e[1]) < posTol
                     && Math.abs(e[2]) < angTol;
             if (atTarget || System.currentTimeMillis() > deadline) return;
@@ -252,8 +295,7 @@ public class Robot {
         }
     }
 
-    /** 还差多少 / how much of the move is left: {forward cm, strafe cm, turn rad} */
-    private double[] remainingError(double[] start, double forwardCm, double strafeCm,
+    private double[] remainingError(double[] start, double forwardIn, double strafeIn,
                                     double turnRad) {
         double[] d = wheelDistances();
         double dfl = d[0] - start[0], dfr = d[1] - start[1];
@@ -263,10 +305,9 @@ public class Robot {
         double doneStrafe = (-dfl + dfr + dbl - dbr) / 4.0;
         double doneTurn   = (-dfl + dfr - dbl + dbr) / (4.0 * K);
 
-        return new double[]{forwardCm - doneFwd, strafeCm - doneStrafe, turnRad - doneTurn};
+        return new double[]{forwardIn - doneFwd, strafeIn - doneStrafe, turnRad - doneTurn};
     }
 
-    /** 把误差变成功率：限幅 + 最小启动功率 / clamp the error into a usable power */
     private static double shape(double raw, double maxPower, double minPower) {
         if (Math.abs(raw) < 1e-4) return 0;
         double p = Math.max(-maxPower, Math.min(maxPower, raw));
@@ -276,24 +317,22 @@ public class Robot {
 
     private double[] wheelDistances() {
         return new double[]{
-                frontLeft.getDistanceCm(), frontRight.getDistanceCm(),
-                backLeft.getDistanceCm(),  backRight.getDistanceCm()
+                frontLeft.getDistance(), frontRight.getDistance(),
+                backLeft.getDistance(),  backRight.getDistance()
         };
     }
 
-    /** 仿真的一步 / one physics step, called by Simulation */
     void step(double dt) {
         for (Motor m : motors) m.update(dt);
 
-        double fl = frontLeft.getSpeedCmPerSec();
-        double fr = frontRight.getSpeedCmPerSec();
-        double bl = backLeft.getSpeedCmPerSec();
-        double br = backRight.getSpeedCmPerSec();
+        double fl = frontLeft.getSpeed();
+        double fr = frontRight.getSpeed();
+        double bl = backLeft.getSpeed();
+        double br = backRight.getSpeed();
 
-        // 麦克纳姆正运动学 / mecanum forward kinematics
-        double bodyVx = (fl + fr + bl + br) / 4.0;          // 前进
-        double bodyVy = (-fl + fr + bl - br) / 4.0;         // 向左
-        double bodyW  = (-fl + fr - bl + br) / (4.0 * K);   // 逆时针
+        double bodyVx = (fl + fr + bl + br) / 4.0;
+        double bodyVy = (-fl + fr + bl - br) / 4.0;
+        double bodyW  = (-fl + fr - bl + br) / (4.0 * K);
 
         synchronized (lock) {
             vx = bodyVx; vy = bodyVy; omega = bodyW;
@@ -303,27 +342,27 @@ public class Robot {
             heading += bodyW * dt;
             runtime += dt;
 
-            // 撞墙就停在墙边 / keep the robot inside the field
-            double hx = Math.abs(BODY_LENGTH_CM / 2 * cos) + Math.abs(BODY_WIDTH_CM / 2 * sin);
-            double hy = Math.abs(BODY_LENGTH_CM / 2 * sin) + Math.abs(BODY_WIDTH_CM / 2 * cos);
-            x = Math.max(hx, Math.min(FIELD_SIZE_CM - hx, x));
-            y = Math.max(hy, Math.min(FIELD_SIZE_CM - hy, y));
+            double hx = Math.abs(Constants.ROBOT_LENGTH / 2 * cos)
+                    + Math.abs(Constants.ROBOT_WIDTH / 2 * sin);
+            double hy = Math.abs(Constants.ROBOT_LENGTH / 2 * sin)
+                    + Math.abs(Constants.ROBOT_WIDTH / 2 * cos);
+            x = Math.max(hx, Math.min(FIELD_SIZE - hx, x));
+            y = Math.max(hy, Math.min(FIELD_SIZE - hy, y));
 
             double[] last = trail.get(trail.size() - 1);
-            if (Math.hypot(x - last[0], y - last[1]) > 1.0) {
+            if (Math.hypot(x - last[0], y - last[1]) > 0.4) {
                 trail.add(new double[]{x, y});
                 if (trail.size() > 4000) trail.remove(0);
             }
         }
     }
 
-    /** 复位到场地中央 / reset the robot back to the middle of the field */
     void reset() {
         for (Motor m : motors) m.hardReset();
         synchronized (lock) {
-            x = FIELD_SIZE_CM / 2;
-            y = FIELD_SIZE_CM / 2;
-            heading = 0;
+            x = initialPose.x;
+            y = initialPose.y;
+            heading = initialPose.heading;
             vx = vy = omega = 0;
             runtime = 0;
             trail.clear();
@@ -332,7 +371,7 @@ public class Robot {
         synchronized (logLines) { logLines.clear(); }
     }
 
-    static double normalizeRad(double a) {
+    public static double normalizeRad(double a) {
         while (a > Math.PI) a -= 2 * Math.PI;
         while (a < -Math.PI) a += 2 * Math.PI;
         return a;
